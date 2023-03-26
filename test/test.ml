@@ -19,7 +19,7 @@ let suite = [
 ]
 
 let run test () =
-  Lwt_main.run (test ())
+  test ()
 
 let () =
   let suite = List.map (fun (n, s) ->

@@ -24,19 +24,6 @@
     {e Release %%VERSION%% } *)
 
 module type S = sig
-
-  type error
-  (** The type for errors. *)
-
-  val pp_error: error Fmt.t
-  (** [pp_error] is the pretty-printer for errors. *)
-
-  type write_error = private [> Mirage_flow.write_error]
-  (** The type for write errors. *)
-
-  val pp_write_error: write_error Fmt.t
-  (** [pp_write_error] is the pretty-printer for write errors. *)
-
   type flow
   (** The type for unbuffered network flow. *)
 
@@ -51,21 +38,21 @@ module type S = sig
   val to_flow: t -> flow
   (** [to_flow t] returns the flow that backs this channel. *)
 
-  val read_char: t -> (char Mirage_flow.or_eof, error) result Lwt.t
+  val read_char: t -> char
   (** Reads a single character from the channel, blocking if there is
       no immediately available input data. *)
 
-  val read_some: ?len:int -> t -> (Cstruct.t Mirage_flow.or_eof, error) result Lwt.t
+  val read_some: ?len:int -> t -> Cstruct.t
   (** [read_some ?len t] reads up to [len] characters from the
       input channel and at most a full [buffer]. If [len] is not
       specified, it reads all available data and returns that
       buffer. *)
 
-  val read_exactly: len:int -> t -> (Cstruct.t list Mirage_flow.or_eof, error) result Lwt.t
+  val read_exactly: len:int -> t -> Cstruct.t list
   (** [read_exactly len t] reads [len] bytes from the channel [t] or fails
       with [Eof]. *)
 
-  val read_line: ?len:int -> t -> (Cstruct.t list Mirage_flow.or_eof, error) result Lwt.t
+  val read_line: ?len:int -> t -> Cstruct.t list
   (** [read_line t] reads a line of input, which is terminated
       either by a CRLF sequence, or the end of the channel (which
       counts as a line).
@@ -98,17 +85,15 @@ module type S = sig
   (** [write_line t buf] writes the string [buf] to the output
       channel and append a newline character afterwards. *)
 
-  val flush: t -> (unit, write_error) result Lwt.t
+  val flush: t -> unit
   (** [flush t] flushes the output buffer and block if necessary
       until it is all written out to the flow. *)
 
-  val close: t -> (unit, write_error) result Lwt.t
+  val close: t -> unit
   (** [close t] calls {!flush} and then close the underlying
       flow. *)
 
 end
 
 (** Functor to create a CHANNEL from a flow implementation *)
-module Make(F: Mirage_flow.S)
-  : S with type flow = F.flow
-       and type error = private [> `Read_zero | `Flow of F.error | `Line_too_long ]
+include S with type flow = Eio.Flow.two_way

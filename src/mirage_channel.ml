@@ -25,19 +25,17 @@ module type S = sig
   type t
   val create: flow -> t
   val to_flow: t -> flow
-  val read_char: t -> (char Mirage_flow.or_eof, error) result Lwt.t
-  val read_some: ?len:int -> t -> (Cstruct.t Mirage_flow.or_eof, error) result Lwt.t
-  val read_exactly: len:int -> t -> (Cstruct.t list Mirage_flow.or_eof, error) result Lwt.t
-  val read_line: ?len:int -> t -> (Cstruct.t list Mirage_flow.or_eof, error) result Lwt.t
+  val read_char: t -> (char Mirage_flow.or_eof, error) result
+  val read_some: ?len:int -> t -> (Cstruct.t Mirage_flow.or_eof, error) result
+  val read_exactly: len:int -> t -> (Cstruct.t list Mirage_flow.or_eof, error) result
+  val read_line: ?len:int -> t -> (Cstruct.t list Mirage_flow.or_eof, error) result
   val write_char: t -> char -> unit
   val write_string: t -> string -> int -> int -> unit
   val write_buffer: t -> Cstruct.t -> unit
   val write_line: t -> string -> unit
-  val flush: t -> (unit, write_error) result Lwt.t
-  val close: t -> (unit, write_error) result Lwt.t
+  val flush: t -> (unit, write_error) result
+  val close: t -> (unit, write_error) result
 end
-
-open Lwt.Infix
 
 let src = Logs.Src.create "channel"
     ~doc:"Buffered reading and writing over the Flow API"
@@ -79,7 +77,7 @@ module Make(Flow: Mirage_flow.S) = struct
   let to_flow { flow; _ } = flow
 
   let ibuf_refill t =
-    Flow.read t.flow >|= function
+    match Flow.read t.flow with
     | Ok (`Data buf) when Cstruct.length buf = 0 ->
         Log.err (fun l -> l "%a" pp_error `Read_zero);
         Error `Read_zero
@@ -90,10 +88,10 @@ module Make(Flow: Mirage_flow.S) = struct
     | Error e -> Error (`Flow e)
 
   let bind v fn =
-   v >>= function
+   match v with
    | Ok (`Data buf) -> fn buf
-   | Ok `Eof -> Lwt.return (Ok `Eof)
-   | Error e -> Lwt.return (Error e)
+   | Ok `Eof -> Ok `Eof
+   | Error e -> Error e
 
   let (>>=~) = bind
 
@@ -101,7 +99,7 @@ module Make(Flow: Mirage_flow.S) = struct
     match t.ibuf with
     | None -> ibuf_refill t >>=~ fun _ -> get_ibuf t
     | Some buf when Cstruct.length buf = 0 -> ibuf_refill t >>=~ fun _ -> get_ibuf t
-    | Some buf -> Lwt.return (Ok (`Data buf))
+    | Some buf -> Ok (`Data buf)
 
   (* Read one character from the input channel *)
   let read_char t =
@@ -110,29 +108,29 @@ module Make(Flow: Mirage_flow.S) = struct
     let c = Cstruct.get_char buf 0 in
     t.ibuf <- Some (Cstruct.shift buf 1); (* advance read buffer, possibly to
                                              EOF *)
-    Lwt.return (Ok (`Data c))
+    Ok (`Data c)
 
   (* Read up to len characters from the input channel
      and at most a full view. If not specified, read all *)
   let read_some ?len t =
     (* get_ibuf potentially throws EOF-related exceptions *)
-    get_ibuf t >>=~ fun buf ->
+    let buf = Result.get_ok @@ get_ibuf t in
     let avail = Cstruct.length buf in
     let len = match len with |Some len -> len |None -> avail in
     if len < avail then begin
       let hd,tl = Cstruct.split buf len in
       t.ibuf <- Some tl; (* leave some in the buffer; next time, we won't do a
                             blocking read *)
-      Lwt.return (Ok (`Data hd))
+      hd
     end else begin
       t.ibuf <- None;
-      Lwt.return (Ok (`Data buf))
+      buf
     end
 
   let read_exactly ~len t =
     let rec loop acc = function
       | 0 ->
-        Lwt.return (Ok (`Data (List.rev acc)))
+        Ok (`Data (List.rev acc))
       | len ->
         read_some ~len t
         >>=~ fun buffer ->
@@ -154,11 +152,11 @@ module Make(Flow: Mirage_flow.S) = struct
     match scan 0 with
     | None -> (* not found, return what we have until EOF *)
       t.ibuf <- Some (Cstruct.shift buf scan_len);
-      Lwt.return (Ok (`Not_found (Cstruct.sub buf 0 scan_len)))
+      Ok (`Not_found (Cstruct.sub buf 0 scan_len))
     | Some off -> (* found, so split the buffer *)
       let hd = Cstruct.sub buf 0 off in
       t.ibuf <- Some (Cstruct.shift buf (off+1));
-      Lwt.return (Ok (`Found hd))
+      Ok (`Found hd)
 
   (* This reads a line of input, which is terminated either by a CRLF
      sequence, or the end of the channel (which counts as a line).
@@ -166,12 +164,12 @@ module Make(Flow: Mirage_flow.S) = struct
   let read_line ?len t =
     let rec get ?len acc =
       match len with
-      | Some 0 -> Lwt.return (Error `Line_too_long)
+      | Some 0 -> Error `Line_too_long
       | _ ->
-        read_until ?len t '\n' >>= function
-        | Error e -> Lwt.return (Error e)
-        | Ok `Eof -> Lwt.return (Ok (`Data acc))
-        | Ok (`Not_found buf) when Cstruct.length buf = 0 -> Lwt.return (Ok (`Data acc))
+        match read_until ?len t '\n' with
+        | Error e -> Error e
+        | Ok `Eof -> Ok (`Data acc)
+        | Ok (`Not_found buf) when Cstruct.length buf = 0 -> Ok (`Data acc)
         | Ok (`Not_found buf) ->
           let len = match len with None -> None | Some l -> Some (l - (Cstruct.length buf)) in
           get ?len (buf::acc)
@@ -182,9 +180,9 @@ module Make(Flow: Mirage_flow.S) = struct
               if buflen > 0 && (Cstruct.get_char buf (buflen-1) = '\r') then
                 Cstruct.sub buf 0 (buflen-1) else buf
             in
-            Lwt.return (Ok (`Data (buf :: acc)))
+            Ok (`Data (buf :: acc))
     in
-    get ?len [] >>=~ fun bits -> Lwt.return (Ok (`Data (List.rev bits)))
+    get ?len [] >>=~ fun bits -> Ok (`Data (List.rev bits))
 
   (* Output functions *)
 
@@ -253,6 +251,6 @@ module Make(Flow: Mirage_flow.S) = struct
     Flow.writev t.flow l
 
   let close t =
-    Lwt.finalize (fun () -> flush t) (fun () -> Flow.close t.flow)
+    Fun.protect (fun () -> flush t) ~finally:(fun () -> Flow.close t.flow)
 
 end
